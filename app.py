@@ -27,9 +27,10 @@ def predict_precise_ph(target_rgb):
         dist = np.linalg.norm(target - cal_rgb)
         distances.append((dist, pt["ph"]))
     
-   distances.sort(key=lambda x: x[0])
-closest = distances[0]
-second_closest = distances[1]
+    distances.sort(key=lambda x: x[0])
+    closest = distances[0]
+    second_closest = distances[1]
+
 
     
     d1, ph1 = closest
