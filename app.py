@@ -9,11 +9,13 @@ from PIL import Image
 # Enter your exact RGB values next to each specific pH number.
 # Keep them sorted from lowest pH to highest pH!
 CALIBRATION_POINTS = [
-    {"ph": 5.5, "rgb": [120, 180, 95]},  # Replace with actual RGB for pH 5.5
-    {"ph": 6.5, "rgb": [170, 190, 80]},  # Replace with actual RGB for pH 6.5
-    {"ph": 7.5, "rgb": [210, 150, 70]},  # Replace with actual RGB for pH 7.5
-    {"ph": 8.5, "rgb":}    # Replace with actual RGB for pH 8.5
+    {"ph": 5.5, "rgb": [100, 200, 100]},  # Greenish placeholder
+    {"ph": 6.5, "rgb": [200, 200, 100]},  # Yellowish placeholder
+    {"ph": 7.5, "rgb": [250, 150, 50]},   # Orangeish placeholder
+    {"ph": 8.5, "rgb": [200, 50, 50]},     # Reddish placeholder
+
 ]
+
 
 def predict_precise_ph(target_rgb):
     """Calculates the exact decimal pH using color distance interpolation."""
@@ -25,9 +27,10 @@ def predict_precise_ph(target_rgb):
         dist = np.linalg.norm(target - cal_rgb)
         distances.append((dist, pt["ph"]))
     
-    distances.sort(key=lambda x: x[0])
-    closest = distances[0]
-    second_closest = distances[1]
+   distances.sort(key=lambda x: x[0])
+closest = distances[0]
+second_closest = distances[1]
+
     
     d1, ph1 = closest
     d2, ph2 = second_closest
