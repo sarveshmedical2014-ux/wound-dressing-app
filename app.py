@@ -8,12 +8,14 @@ from PIL import Image
 # =======================================================
 # Enter your exact RGB values next to each specific pH number.
 # Keep them sorted from lowest pH to highest pH!
+# The pH 7 RGB value below is an approximate visual reference from your photo,
+# not yet a laboratory-validated calibration measurement.
 CALIBRATION_POINTS = [
     {"ph": 5.5, "rgb": [100, 200, 100]},  # Greenish placeholder
     {"ph": 6.5, "rgb": [200, 200, 100]},  # Yellowish placeholder
+    {"ph": 7.0, "rgb": [104, 66, 76]},    # Provisional neutral reference from your photo (#68424C)
     {"ph": 7.5, "rgb": [250, 150, 50]},   # Orangeish placeholder
-    {"ph": 8.5, "rgb": [200, 50, 50]},     # Reddish placeholder
-
+    {"ph": 8.5, "rgb": [200, 50, 50]},    # Reddish placeholder
 ]
 
 
