@@ -1,93 +1,136 @@
 import streamlit as st
-import cv2
 import numpy as np
-from PIL import Image
+import cv2
+from PIL import Image, ImageDraw
 
-# =======================================================
-# 1. YOUR LAB CALIBRATION DATA
-# =======================================================
-# Enter your exact RGB values next to each specific pH number.
-# Keep them sorted from lowest pH to highest pH!
-CALIBRATION_POINTS = [
-    {"ph": 5.5, "rgb": [100, 200, 100]},  # Greenish placeholder
-    {"ph": 6.5, "rgb": [200, 200, 100]},  # Yellowish placeholder
-    {"ph": 7.5, "rgb": [250, 150, 50]},   # Orangeish placeholder
-    {"ph": 8.5, "rgb": [200, 50, 50]},     # Reddish placeholder
+st.set_page_config(page_title="Herbal Wound Dressing Colour Analyzer", layout="centered")
+st.title("AI-Assisted Smart Herbal Wound Dressing")
+st.subheader("Automatic central indicator detection")
 
-]
+st.write(
+    "Upload a clear photograph. The app will try to locate the dark pink-purple indicator circle, "
+    "outline the selected area, and measure its colour."
+)
+st.warning(
+    "The app measures photographed colour only. It cannot confirm neutral pH or wound health "
+    "unless the indicator has been calibrated against known-pH solutions."
+)
 
+uploaded_file = st.file_uploader("Upload patch photograph", type=["jpg", "jpeg", "png"])
 
-def predict_precise_ph(target_rgb):
-    """Calculates the exact decimal pH using color distance interpolation."""
-    target = np.array(target_rgb)
-    distances = []
-    
-    for pt in CALIBRATION_POINTS:
-        cal_rgb = np.array(pt["rgb"])
-        dist = np.linalg.norm(target - cal_rgb)
-        distances.append((dist, pt["ph"]))
-    
-    distances.sort(key=lambda x: x[0])
-    closest = distances[0]
-    second_closest = distances[1]
+def detect_indicator(rgb):
+    """Find a likely pink/purple circular indicator using colour segmentation and shape."""
+    h_img, w_img = rgb.shape[:2]
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
 
+    # Search mainly in the lower-central region, where the small indicator sits
+    # in the user's reference photograph. This can be adjusted if the photo framing changes.
+    x_start, x_end = int(w_img * 0.20), int(w_img * 0.75)
+    y_start, y_end = int(h_img * 0.45), int(h_img * 0.90)
+    crop_hsv = hsv[y_start:y_end, x_start:x_end]
 
-    
-    d1, ph1 = closest
-    d2, ph2 = second_closest
-    
-    if d1 + d2 == 0:
-        return ph1
-        
-    weight1 = d2 / (d1 + d2)
-    weight2 = d1 / (d1 + d2)
-    precise_ph = (ph1 * weight1) + (ph2 * weight2)
-    return round(precise_ph, 2)
+    hue = crop_hsv[:, :, 0]
+    sat = crop_hsv[:, :, 1]
+    val = crop_hsv[:, :, 2]
 
-def get_clinical_prediction(ph):
-    """Returns the medical prediction based on the calculated pH scale."""
-    if ph <= 6.0:
-        return "💚 HEALTHY: Normal acidic skin environment. The herbal dressing is maintaining a strong healing barrier.", "success"
-    elif 6.0 < ph <= 7.0:
-        return "💛 HEALING PROGRESS: Wound tissue is actively regenerating. Continue monitoring.", "info"
-    elif 7.0 < ph <= 8.0:
-        return "⚠️ WARNING (HIGH RISK): Early chemical shift detected. High risk of bacterial growth or inflammation.", "warning"
+    # Pink/red/purple hues, with sufficient saturation to reduce clear dish/background pixels.
+    hue_mask = ((hue <= 12) | ((hue >= 135) & (hue <= 179)))
+    mask = (hue_mask & (sat >= 45) & (val >= 25) & (val <= 235)).astype(np.uint8) * 255
+
+    # Join small gaps in the coloured circle and remove isolated specks.
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    crop_area = crop_hsv.shape[0] * crop_hsv.shape[1]
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < max(100, crop_area * 0.001) or area > crop_area * 0.25:
+            continue
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter <= 0:
+            continue
+        circularity = 4 * np.pi * area / (perimeter * perimeter)
+        (cx, cy), radius = cv2.minEnclosingCircle(contour)
+        if radius < 8:
+            continue
+        # Prefer reasonably round components near the centre of the search area.
+        target_x, target_y = crop_hsv.shape[1] * 0.55, crop_hsv.shape[0] * 0.70
+        distance = np.sqrt(((cx - target_x) / max(1, crop_hsv.shape[1]))**2 +
+                           ((cy - target_y) / max(1, crop_hsv.shape[0]))**2)
+        score = area * (0.35 + min(circularity, 1.0)) / (1 + 5 * distance)
+        candidates.append((score, contour, circularity))
+
+    if not candidates:
+        return None
+
+    _, contour, circularity = max(candidates, key=lambda item: item[0])
+    x, y, w, h = cv2.boundingRect(contour)
+    # Add a small margin around the detected coloured area.
+    margin = max(3, int(max(w, h) * 0.08))
+    x1 = max(0, x_start + x - margin)
+    y1 = max(0, y_start + y - margin)
+    x2 = min(w_img, x_start + x + w + margin)
+    y2 = min(h_img, y_start + y + h + margin)
+    return (x1, y1, x2, y2, circularity)
+
+if uploaded_file:
+    image = Image.open(uploaded_file).convert("RGB")
+    rgb = np.array(image)
+    result = detect_indicator(rgb)
+
+    if result is None:
+        st.image(image, caption="Uploaded photograph", use_container_width=True)
+        st.error(
+            "I couldn't confidently detect the coloured circle automatically. "
+            "Try a brighter, top-down photo with the indicator circle clearly visible against a plain background."
+        )
     else:
-        return "🚨 CRITICAL ALARM: Active infection detected! Alkaline spike indicates high bacterial colonization. Change dressing immediately.", "error"
+        x1, y1, x2, y2, circularity = result
+        roi = rgb[y1:y2, x1:x2]
 
-# =======================================================
-# 2. SMARTPHONE INTERFACE DESIGN
-# =======================================================
-st.set_page_config(page_title="Smart Wound Monitor", page_icon="🩹", layout="centered")
+        # Show the selected region outlined on the full photo.
+        preview = image.copy()
+        draw = ImageDraw.Draw(preview)
+        draw.rectangle((x1, y1, x2, y2), outline=(0, 255, 0), width=max(3, rgb.shape[1] // 300))
+        st.image(preview, caption="Automatically selected indicator region (green outline)", use_container_width=True)
+        st.image(roi, caption="Selected central colour region", use_container_width=False)
 
-st.title("🩹 AI-Assisted Smart Wound Monitor")
-st.write("Snap a photo of the patch. The AI will calculate the exact pH and predict wound status.")
+        # Use pixels that are actually pink/red/purple inside the selected region,
+        # avoiding transparent/background pixels included by the rectangular crop.
+        roi_hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+        hh, ss, vv = roi_hsv[:, :, 0], roi_hsv[:, :, 1], roi_hsv[:, :, 2]
+        colour_pixels = (((hh <= 12) | ((hh >= 135) & (hh <= 179))) &
+                         (ss >= 45) & (vv >= 25) & (vv <= 235))
+        pixels = roi[colour_pixels]
 
-uploaded_file = st.camera_input("Capture Dressing Patch")
+        if len(pixels) < 20:
+            pixels = roi.reshape(-1, 3)
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    img_np = np.array(image)
-    
-    avg_color = cv2.mean(img_np)[:3]
-    avg_rgb = [int(x) for x in avg_color]
-    
-    calculated_ph = predict_precise_ph(avg_rgb)
-    message, status_type = get_clinical_prediction(calculated_ph)
-    
-    st.divider()
-    st.subheader("AI Analysis Results")
-    st.metric(label="Calculated Wound pH Level", value=f"pH {calculated_ph}")
-    
-    color_hex = '#{:02x}{:02x}{:02x}'.format(*avg_rgb)
-    st.write("**Detected Patch Color:**")
-    st.markdown(f'<div style="background-color:{color_hex}; width:100%; height:40px; border-radius:8px; border:1px solid #ddd; margin-bottom:15px;"></div>', unsafe_allow_html=True)
-    
-    if status_type == "success":
-        st.success(message)
-    elif status_type == "info":
-        st.info(message)
-    elif status_type == "warning":
-        st.warning(message)
-    else:
-        st.error(message)
+        median_rgb = tuple(int(v) for v in np.median(pixels, axis=0))
+        median_hsv = tuple(int(v) for v in np.median(
+            cv2.cvtColor(pixels.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV).reshape(-1, 3),
+            axis=0
+        ))
+        hex_colour = "#{:02X}{:02X}{:02X}".format(*median_rgb)
+
+        st.markdown("### Measured colour")
+        st.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:14px;">
+              <div style="width:72px;height:72px;border-radius:12px;border:1px solid #777;background:{hex_colour};"></div>
+              <div><b>{hex_colour}</b><br>Median RGB: {median_rgb}<br>Median HSV: {median_hsv}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Detection shape score (circularity): {circularity:.2f}")
+        st.info(
+            "Detection is automatic but not guaranteed. Check the green outline before using the colour values. "
+            "These values describe the photo under its current lighting; they do not establish pH."
+        )
+else:
+    st.caption("Upload your photograph to detect and measure the central coloured circle.")
