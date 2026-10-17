@@ -3,11 +3,10 @@ import numpy as np
 import cv2
 from PIL import Image, ImageDraw
 
-st.set_page_config(page_title="Smart Herbal Wound Monitor", page_icon="🩹", layout="centered")
+st.set_page_config(page_title="Smart Wound Monitor", page_icon="🩹", layout="centered")
 
-# IMPORTANT:
-# These are example values copied from the old app and were marked as placeholders.
-# Replace them with real measurements from known pH buffer solutions before using pH estimates.
+# These are placeholders from the previous app, not real laboratory calibration data.
+# Replace with measured values from known pH buffer solutions before enabling estimates.
 CALIBRATION_POINTS = [
     {"ph": 5.5, "rgb": [100, 200, 100]},
     {"ph": 6.5, "rgb": [200, 200, 100]},
@@ -17,7 +16,6 @@ CALIBRATION_POINTS = [
 CALIBRATION_IS_VALIDATED = False
 
 def detect_indicator(rgb_image):
-    """Find a likely pink/purple indicator region near the centre/lower-centre."""
     hsv = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
     mask1 = cv2.inRange(hsv, np.array([0, 35, 35]), np.array([12, 255, 255]))
     mask2 = cv2.inRange(hsv, np.array([145, 25, 25]), np.array([179, 255, 255]))
@@ -25,15 +23,15 @@ def detect_indicator(rgb_image):
     mask = cv2.bitwise_or(mask1, cv2.bitwise_or(mask2, mask3))
 
     height, width = mask.shape
-    roi_y1, roi_y2 = int(height * 0.20), int(height * 0.90)
-    roi_x1, roi_x2 = int(width * 0.15), int(width * 0.85)
-    roi = cv2.medianBlur(mask[roi_y1:roi_y2, roi_x1:roi_x2], 5)
+    y1, y2 = int(height * 0.20), int(height * 0.90)
+    x1, x2 = int(width * 0.15), int(width * 0.85)
+    roi = cv2.medianBlur(mask[y1:y2, x1:x2], 5)
     contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     candidates = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < max(80, (height * width) * 0.0002):
+        if area < max(80, height * width * 0.0002):
             continue
         perimeter = cv2.arcLength(contour, True)
         if perimeter <= 0:
@@ -41,97 +39,83 @@ def detect_indicator(rgb_image):
         circularity = 4 * np.pi * area / (perimeter * perimeter)
         x, y, w, h = cv2.boundingRect(contour)
         aspect = w / float(h) if h else 0
-        score = area * (1.0 - min(abs(1.0 - aspect), 1.0)) * (0.5 + circularity)
+        score = area * (1 - min(abs(1 - aspect), 1)) * (0.5 + circularity)
         candidates.append((score, x, y, w, h))
-
     if not candidates:
         return None
     _, x, y, w, h = max(candidates, key=lambda item: item[0])
-    return (x + roi_x1, y + roi_y1, w, h)
+    return x + x1, y + y1, w, h
 
-def estimate_ph_from_rgb(target_rgb):
-    """Nearest-colour interpolation; only meaningful with experimentally validated calibration."""
+def estimate_ph(target_rgb):
     target = np.array(target_rgb, dtype=float)
     distances = []
     for point in CALIBRATION_POINTS:
-        cal_rgb = np.array(point["rgb"], dtype=float)
-        distances.append((float(np.linalg.norm(target - cal_rgb)), point["ph"]))
+        d = float(np.linalg.norm(target - np.array(point["rgb"], dtype=float)))
+        distances.append((d, point["ph"]))
     distances.sort(key=lambda item: item[0])
     (d1, ph1), (d2, ph2) = distances[:2]
     if d1 + d2 == 0:
-        return float(ph1)
+        return ph1
     return round((ph1 * d2 + ph2 * d1) / (d1 + d2), 2)
 
 camera_image = st.camera_input("Capture Dressing Patch")
 with st.expander("Or upload a photo instead"):
-    uploaded_image = st.file_uploader("Choose a patch photo", type=["png", "jpg", "jpeg"])
-image_file = camera_image if camera_image is not None else uploaded_image
+    upload_image = st.file_uploader("Choose a patch photo", type=["png", "jpg", "jpeg"])
+image_file = camera_image if camera_image is not None else upload_image
 
 if image_file is None:
-    st.info("Capture a clear photo of the patch to begin.")
+    st.info("Capture a clear photo of the dressing patch to begin.")
 else:
     try:
         pil_image = Image.open(image_file).convert("RGB")
-        rgb_image = np.array(pil_image)
+        rgb = np.array(pil_image)
+        box = detect_indicator(rgb)
 
-        detected_box = detect_indicator(rgb_image)
         st.subheader("Captured photo")
-
-        if detected_box is None:
+        if box is None:
             st.image(pil_image, use_container_width=True)
-            st.warning("I could not confidently find the pink/purple indicator circle. Try brighter, even lighting and keep the circle fully visible.")
+            st.warning("Indicator circle not detected. Try again with clear lighting and the full circle visible.")
         else:
-            x, y, w, h = detected_box
+            x, y, w, h = box
             outlined = pil_image.copy()
             draw = ImageDraw.Draw(outlined)
-            draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 0), width=max(3, rgb_image.shape[1] // 250))
-            st.image(outlined, caption="Green outline indicates the region selected for colour measurement.", use_container_width=True)
+            draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 0), width=max(3, rgb.shape[1] // 250))
+            st.image(outlined, caption="Detected indicator area", use_container_width=True)
 
-            # Sample central portion of the detected region to reduce edge/background effects.
-            pad_x, pad_y = max(1, int(w * 0.20)), max(1, int(h * 0.20))
-            x1, x2 = max(0, x + pad_x), min(rgb_image.shape[1], x + w - pad_x)
-            y1, y2 = max(0, y + pad_y), min(rgb_image.shape[0], y + h - pad_y)
-            sample = rgb_image[y1:y2, x1:x2]
+            padx, pady = max(1, int(w * 0.2)), max(1, int(h * 0.2))
+            sx1, sx2 = max(0, x + padx), min(rgb.shape[1], x + w - padx)
+            sy1, sy2 = max(0, y + pady), min(rgb.shape[0], y + h - pady)
+            sample = rgb[sy1:sy2, sx1:sx2]
             if sample.size == 0:
-                sample = rgb_image[y:y + h, x:x + w]
-            avg_rgb = np.median(sample.reshape(-1, 3), axis=0).astype(int).tolist()
-            r, g, b = avg_rgb
-            colour_hex = f"#{r:02X}{g:02X}{b:02X}"
-            avg_hsv = cv2.cvtColor(np.uint8([[[r, g, b]]]), cv2.COLOR_RGB2HSV)[0, 0].tolist()
+                sample = rgb[y:y+h, x:x+w]
+            measured_rgb = np.median(sample.reshape(-1, 3), axis=0).astype(int).tolist()
 
             st.divider()
             st.subheader("AI Analysis Results")
-            st.write("**Detected indicator colour**")
-            st.markdown(
-                f'<div style="background-color:{colour_hex};width:100%;height:44px;border-radius:8px;'
-                f'border:1px solid #888;margin-bottom:10px;"></div>',
-                unsafe_allow_html=True,
-            )
-            col1, col2, col3 = st.columns(3)
-            col1.metric("RGB", f"{r}, {g}, {b}")
-            col2.metric("HSV", f"{avg_hsv[0]}, {avg_hsv[1]}, {avg_hsv[2]}")
-            col3.metric("HEX", colour_hex)
 
             if CALIBRATION_IS_VALIDATED:
-                estimated_ph = estimate_ph_from_rgb(avg_rgb)
-                st.metric("Estimated indicator pH", f"pH {estimated_ph}")
-                st.caption("This estimate is only valid within the range and conditions tested during calibration.")
+                ph = estimate_ph(measured_rgb)
+                st.metric("Calculated Indicator pH", f"pH {ph}")
+                if ph <= 6.0:
+                    st.success("Acidic indicator response (pH ≤ 6.0). This does not establish that the wound is healthy.")
+                elif ph <= 7.0:
+                    st.info("Indicator response in the pH 6.0–7.0 range. This does not establish wound healing.")
+                elif ph <= 8.0:
+                    st.warning("Indicator response in the pH 7.0–8.0 range. Clinical condition cannot be determined from pH alone.")
+                else:
+                    st.error("Indicator response above pH 8.0. This is not proof of infection; seek clinical assessment if concerned.")
             else:
-                st.metric("Estimated pH", "Not calibrated")
+                st.metric("Calculated Indicator pH", "Calibration required")
                 st.info(
-                    "The previous app used placeholder RGB values, not measured laboratory calibration data. "
-                    "Enter RGB measurements from known buffer solutions and validate the calibration before showing a pH estimate."
+                    "The previous app's RGB-to-pH values were placeholders, not measured calibration data. "
+                    "Add validated measurements from known pH buffer solutions to enable a pH estimate."
                 )
 
-            st.subheader("Wound condition")
+            st.subheader("Wound Condition")
             st.warning(
-                "Not determined. Patch colour alone cannot confirm that a wound is healthy, healing, or infected. "
-                "This prototype does not provide a clinical diagnosis."
+                "Cannot be determined from patch colour alone. This prototype cannot confirm healthy tissue, healing progress, or infection."
             )
-            st.caption(
-                "For reliable pH estimation, photograph the indicator in consistent lighting alongside known pH buffer "
-                "solutions, collect replicate RGB values, and validate the calibration on separate samples."
-            )
+            st.caption("Use consistent lighting and validate the indicator with known pH buffers before relying on any pH estimate.")
     except Exception as error:
         st.error("The photo could not be processed. Please try another clear JPG or PNG photo.")
         st.caption(f"Technical detail: {error}")
