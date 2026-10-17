@@ -16,7 +16,12 @@ st.warning(
     "unless the indicator has been calibrated against known-pH solutions."
 )
 
-uploaded_file = st.file_uploader("Upload patch photograph", type=["jpg", "jpeg", "png"])
+st.markdown("### Capture patch photograph")
+camera_photo = st.camera_input("Take a photo of the central indicator")
+
+st.markdown("Or upload a photo if the camera is unavailable.")
+uploaded_photo = st.file_uploader("Upload patch photograph", type=["jpg", "jpeg", "png"])
+photo = camera_photo if camera_photo is not None else uploaded_photo
 
 def detect_indicator(rgb):
     """Find a likely pink/purple circular indicator using colour segmentation and shape."""
@@ -77,8 +82,8 @@ def detect_indicator(rgb):
     y2 = min(h_img, y_start + y + h + margin)
     return (x1, y1, x2, y2, circularity)
 
-if uploaded_file:
-    image = Image.open(uploaded_file).convert("RGB")
+if photo is not None:
+    image = Image.open(photo).convert("RGB")
     rgb = np.array(image)
     result = detect_indicator(rgb)
 
@@ -89,48 +94,3 @@ if uploaded_file:
             "Try a brighter, top-down photo with the indicator circle clearly visible against a plain background."
         )
     else:
-        x1, y1, x2, y2, circularity = result
-        roi = rgb[y1:y2, x1:x2]
-
-        # Show the selected region outlined on the full photo.
-        preview = image.copy()
-        draw = ImageDraw.Draw(preview)
-        draw.rectangle((x1, y1, x2, y2), outline=(0, 255, 0), width=max(3, rgb.shape[1] // 300))
-        st.image(preview, caption="Automatically selected indicator region (green outline)", use_container_width=True)
-        st.image(roi, caption="Selected central colour region", use_container_width=False)
-
-        # Use pixels that are actually pink/red/purple inside the selected region,
-        # avoiding transparent/background pixels included by the rectangular crop.
-        roi_hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
-        hh, ss, vv = roi_hsv[:, :, 0], roi_hsv[:, :, 1], roi_hsv[:, :, 2]
-        colour_pixels = (((hh <= 12) | ((hh >= 135) & (hh <= 179))) &
-                         (ss >= 45) & (vv >= 25) & (vv <= 235))
-        pixels = roi[colour_pixels]
-
-        if len(pixels) < 20:
-            pixels = roi.reshape(-1, 3)
-
-        median_rgb = tuple(int(v) for v in np.median(pixels, axis=0))
-        median_hsv = tuple(int(v) for v in np.median(
-            cv2.cvtColor(pixels.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV).reshape(-1, 3),
-            axis=0
-        ))
-        hex_colour = "#{:02X}{:02X}{:02X}".format(*median_rgb)
-
-        st.markdown("### Measured colour")
-        st.markdown(
-            f"""
-            <div style="display:flex;align-items:center;gap:14px;">
-              <div style="width:72px;height:72px;border-radius:12px;border:1px solid #777;background:{hex_colour};"></div>
-              <div><b>{hex_colour}</b><br>Median RGB: {median_rgb}<br>Median HSV: {median_hsv}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption(f"Detection shape score (circularity): {circularity:.2f}")
-        st.info(
-            "Detection is automatic but not guaranteed. Check the green outline before using the colour values. "
-            "These values describe the photo under its current lighting; they do not establish pH."
-        )
-else:
-    st.caption("Upload your photograph to detect and measure the central coloured circle.")
